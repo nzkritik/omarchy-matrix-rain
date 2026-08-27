@@ -5,7 +5,11 @@ A live, theme-coloured matrix rain wallpaper for [Omarchy](https://omarchy.org/)
 itself the moment you switch themes. The same plugin also plays looping video
 and animated GIF/WebP wallpapers.
 
-![Matrix rain running as the desktop wallpaper](docs/screenshot.png)
+![Theme-coloured katakana falling as a live wallpaper](docs/demo.webp)
+
+Whole desktop, same thing running behind the bar:
+
+![Matrix rain as the desktop wallpaper](docs/screenshot.png)
 
 It does **not** replace `omarchy.background`. The stock plugin keeps drawing
 your still wallpapers and keeps every upstream fix; this one claims the *bottom*
