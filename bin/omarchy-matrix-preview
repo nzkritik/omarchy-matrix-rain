@@ -1,0 +1,134 @@
+#!/bin/bash
+
+# Maintains the still image that stands in for the matrix rain in Omarchy's
+# background picker.
+#
+# omarchy-menu-images can only list still images, so the rain is represented by
+# a preview PNG. nzkritik.matrix-rain recognises that file by name and draws
+# the live effect instead of the still. The file is written into the *current
+# theme's* user background folder, a directory the stock picker already scans —
+# which is why none of this needs to override any packaged command.
+#
+# The preview is a grayscale capture of the real rain, recoloured here to the
+# theme's accent so the entry matches whatever theme is active. The plugin runs
+# it on every theme change; it is idempotent and cheap to call repeatedly.
+#
+#   (no arguments)   ensure the preview exists and matches the theme
+#   --print-path     the same, then print the path (used to select the rain)
+#   --capture        rebuild the grayscale master from the running rain
+#
+# Requires: ImageMagick. --capture additionally needs grim, jq and hyprctl.
+
+set -euo pipefail
+
+# Must match RAIN_FILE in Classify.js.
+RAIN_FILE="zz-matrix-rain.png"
+
+SELF=$(readlink -f "$0")
+PLUGIN_DIR=${SELF%/bin/*}
+MASTER="$PLUGIN_DIR/assets/matrix-master.png"
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-matrix-rain"
+THEME_NAME_FILE="$HOME/.local/state/omarchy/current/theme.name"
+THEME_COLORS="$HOME/.local/state/omarchy/current/theme/colors.toml"
+
+mode=ensure
+case "${1:-}" in
+  "") ;;
+  --print-path) mode=print ;;
+  --capture) mode=capture ;;
+  -h | --help)
+    sed -n '3,22p' "$SELF" | sed 's/^# \{0,1\}//'
+    exit 0
+    ;;
+  *)
+    echo "omarchy-matrix-preview: unknown option: $1" >&2
+    exit 1
+    ;;
+esac
+
+theme=$(cat "$THEME_NAME_FILE" 2>/dev/null || true)
+[[ -n $theme ]] || {
+  echo "omarchy-matrix-preview: no current theme ($THEME_NAME_FILE)" >&2
+  exit 1
+}
+
+OUT_DIR="$HOME/.config/omarchy/backgrounds/$theme"
+OUT="$OUT_DIR/$RAIN_FILE"
+# Kept out of the background folder so the picker never sees a stray file.
+STAMP="$STATE_DIR/$theme.accent"
+
+if [[ $mode == capture ]]; then
+  # grim captures whatever is composited, so a window anywhere on the active
+  # workspace would be baked into the wallpaper preview.
+  if [[ $(hyprctl activeworkspace -j | jq -r '.windows') != "0" ]]; then
+    echo "omarchy-matrix-preview: the active workspace has windows on it; clear the screen or switch to an empty workspace first" >&2
+    exit 1
+  fi
+  if [[ $(readlink -f "$HOME/.local/state/omarchy/current/background" 2>/dev/null) != "$OUT" ]]; then
+    echo "omarchy-matrix-preview: select the matrix rain first (omarchy-shell matrix-rain select)" >&2
+    exit 1
+  fi
+
+  shot=$(mktemp --suffix=.png)
+  trap 'rm -f "$shot"' EXIT
+  grim "$shot"
+
+  # Rain is stochastic, so a fixed crop can land on a bare patch. Score a few
+  # candidate tiles by mean luminance -- which for glyphs on black is just
+  # density -- and keep the busiest. Tiles are a 16:9 third of the screen, and
+  # the top row is skipped so the bar never lands in the preview.
+  w=$(identify -format '%w' "$shot")
+  h=$(identify -format '%h' "$shot")
+  cw=$((w / 3))
+  ch=$((cw * 9 / 16))
+
+  best_geom=""
+  best_score=-1
+  for x in 0 $(((w - cw) / 2)) $((w - cw)); do
+    for y in $((h / 16)) $(((h - ch) / 2)) $((h - ch)); do
+      geom="${cw}x${ch}+${x}+${y}"
+      score=$(magick "$shot" -crop "$geom" +repage -colorspace Gray \
+        -format '%[fx:int(mean*100000)]' info:)
+      if ((score > best_score)); then
+        best_score=$score
+        best_geom=$geom
+      fi
+    done
+  done
+
+  # -auto-level pulls the head glyphs back up to white; without it the tint
+  # below maps the brightest pixel to well short of the accent and the preview
+  # reads as a muddy version of the theme colour. Upscaled so the glyphs
+  # survive being thumbnailed by the picker, and desaturated because the tint
+  # supplies the colour.
+  magick "$shot" -crop "$best_geom" +repage \
+    -colorspace Gray -auto-level -filter Lanczos -resize '1920x1080!' "$MASTER"
+fi
+
+[[ -r $MASTER ]] || {
+  echo "omarchy-matrix-preview: missing master image: $MASTER" >&2
+  exit 1
+}
+
+accent=$(sed -n 's/^[[:space:]]*accent[[:space:]]*=[[:space:]]*"\{0,1\}#\{0,1\}\([0-9a-fA-F]\{6\}\)"\{0,1\}.*/\1/p' \
+  "$THEME_COLORS" 2>/dev/null | head -n1)
+[[ $accent =~ ^[0-9a-fA-F]{6}$ ]] || accent="cacccc"
+
+# Skip the work when nothing has changed: rewriting would bump the mtime and
+# throw away the picker's cached thumbnail for no reason.
+if [[ $mode != capture && -f $OUT && -f $STAMP && $OUT -nt $MASTER && $(<"$STAMP") == "$accent" ]]; then
+  [[ $mode == print ]] && printf '%s\n' "$OUT"
+  exit 0
+fi
+
+mkdir -p "$OUT_DIR" "$STATE_DIR"
+
+# The master is a luminance ramp over black, which is exactly the shape
+# +level-colors wants: black stays black, white becomes the accent, and the
+# tails in between land on the same gradient the renderer draws.
+magick "$MASTER" +level-colors "black,#$accent" -colorspace sRGB PNG24:"$OUT"
+printf '%s' "$accent" >"$STAMP"
+
+[[ $mode == print ]] && printf '%s\n' "$OUT"
+exit 0

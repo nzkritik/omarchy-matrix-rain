@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "nzkritik.matrix-rain",
+  "name": "Matrix Rain",
+  "version": "1.0.0",
+  "author": "nzkritik",
+  "description": "Live matrix rain wallpaper that follows your Omarchy theme, plus looping video and animated GIF wallpapers.",
+  "kinds": [
+    "service"
+  ],
+  "entryPoints": {
+    "service": "Service.qml"
+  }
+}
