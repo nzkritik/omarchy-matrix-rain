@@ -107,15 +107,23 @@ Item {
     command: ["bash", "-c", root.pickBin + 'p=$("$bin" --print-path) && exec omarchy-theme-bg-set "$p"', root.bundledPreview]
   }
 
-  // A theme switch rewrites this file, which is the cue to re-tint the preview
+  // A theme switch rewrites theme.name, which is the cue to re-tint the preview
   // and drop a copy into the new theme's folder. No theme-set hook needed.
-  FileView {
-    id: themeName
-    path: root.themeNamePath
-    watchChanges: true
-    printErrors: false
-    onLoaded: previewDebounce.restart()
-    onFileChanged: reload()
+  //
+  // The file is watched but never opened. Only the fact that it changed is
+  // needed here, and opening a predictable path under ~/.local/state from a
+  // long-lived shell process is a liability: a FIFO left in its place would
+  // block the shell on read, and an oversized or redirected file would be
+  // pulled into it whole. inotifywait reports directory events by name and the
+  // fallback compares mtime, so neither path opens the file, follows a link
+  // into one, or reads a byte of it.
+  Process {
+    id: themeWatcher
+    running: true
+    command: ["bash", "-c", "p=\"$1\"; dir=\"${p%/*}\"; base=\"${p##*/}\"; if command -v inotifywait >/dev/null 2>&1; then inotifywait -q -m -e create,moved_to,close_write,attrib --format '%f' \"$dir\" 2>/dev/null | while IFS= read -r f; do [ \"$f\" = \"$base\" ] && echo changed; done; else last=\"\"; while :; do cur=$(stat -c %Y \"$p\" 2>/dev/null || true); if [ \"$cur\" != \"$last\" ]; then last=\"$cur\"; echo changed; fi; sleep 2; done; fi", "omarchy-matrix-rain-theme-watch", root.themeNamePath]
+    stdout: SplitParser {
+      onRead: previewDebounce.restart()
+    }
   }
 
   Timer {
