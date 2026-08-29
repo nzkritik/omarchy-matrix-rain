@@ -16,6 +16,24 @@ Item {
 
   property bool playing: true
 
+  // `columns` and `rows` are independent bindings off width and height, and the
+  // Repeater rebuilds every delegate the moment `columns` updates -- which can
+  // start a column's animation while `rows` still holds its pre-resize value.
+  // On a surface going 0x0 -> full screen that means rows == 1: the first pass
+  // ends immediately and each stream re-enters from the top edge, which is what
+  // made the whole screen fill from the top. Dropping `ready` on any size
+  // change and raising it a turn later lets both bindings settle first.
+  property bool ready: false
+  onWidthChanged: { ready = false; settle.restart() }
+  onHeightChanged: { ready = false; settle.restart() }
+
+  Timer {
+    id: settle
+    interval: 0
+    repeat: false
+    onTriggered: rain.ready = rain.width > 0 && rain.height > 0
+  }
+
   // Tunables. `cell` is the glyph grid pitch in pixels; everything else is
   // expressed in grid rows so the look holds across displays.
   readonly property int cell: 16
@@ -92,6 +110,19 @@ Item {
       // Grid row of the leading glyph. The stream extends upward from here.
       property real headRow: -trail
 
+      // Row the current pass enters from. -trail (just above the top edge) for
+      // every pass but the first, which is scattered down the screen so a
+      // freshly mapped surface is already full of rain. At minSpeed a stream
+      // needs the better part of a minute to fall the height of a 4K display,
+      // so without this the effect opens on a near-empty screen with a few
+      // streams trickling in from the top -- most visible on a surface that is
+      // built cold every time it is shown, such as the lock screen.
+      // Initialised to a literal, never a binding: `-trail` here would bind
+      // startRow to `trail`, which respawn() reassigns from inside this same
+      // animation -- QML then flags a binding loop on the NumberAnimation's
+      // `from`. The opening ScriptAction sets this before every pass anyway.
+      property real startRow: 0
+
       // Four flat colour bands instead of a true per-column gradient. A
       // gradient would mean a layer effect, and a layer effect per column is
       // one framebuffer per column — at ~100 columns that costs far more than
@@ -114,12 +145,11 @@ Item {
         glyphs = glyphs.slice(0, i) + rain.randomGlyph() + glyphs.slice(i + 1)
       }
 
-      Component.onCompleted: {
-        respawn()
-        // Scatter the first pass across the screen instead of dropping every
-        // stream from the top edge in unison.
-        headRow = -Math.random() * rain.rows
-      }
+      // Set once the first pass has been scattered, so later passes enter from
+      // the top edge like normal.
+      property bool scattered: false
+
+      Component.onCompleted: respawn()
 
       // Only this wrapper's y is animated, so a frame costs one property
       // update per column rather than one per Text item.
@@ -158,18 +188,28 @@ Item {
       }
 
       SequentialAnimation {
-        running: rain.playing && rain.rows > 0
+        running: rain.playing && rain.ready
         loops: Animation.Infinite
 
+        ScriptAction {
+          script: {
+            if (column.scattered) {
+              column.startRow = -column.trail
+            } else {
+              column.scattered = true
+              column.startRow = -column.trail + Math.random() * (rain.rows + column.trail)
+            }
+          }
+        }
         PauseAnimation {
           duration: column.startDelay
         }
         NumberAnimation {
           target: column
           property: "headRow"
-          from: -column.trail
+          from: column.startRow
           to: rain.rows + column.trail
-          duration: Math.max(1, Math.round((rain.rows + 2 * column.trail) / column.speed * 1000))
+          duration: Math.max(1, Math.round((rain.rows + column.trail - column.startRow) / column.speed * 1000))
         }
         // Re-randomise between passes so streams drift out of phase instead of
         // settling into a visible repeating pattern.
