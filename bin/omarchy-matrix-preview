@@ -32,6 +32,17 @@ STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-matrix-rain"
 THEME_NAME_FILE="$HOME/.local/state/omarchy/current/theme.name"
 THEME_COLORS="$HOME/.local/state/omarchy/current/theme/colors.toml"
 
+# Every path below is predictable and writable by anything running as this user,
+# so whatever is sitting at one is untrusted input. All reads of them go through
+# here: iflag=nofollow refuses a symlink rather than following it somewhere else,
+# nonblock means a planted FIFO returns immediately instead of wedging this
+# process, and count bounds how much a swollen replacement can hand back. The
+# read is best-effort by design -- a caller that gets nothing reports its own
+# error rather than inheriting dd's.
+read_guarded() { # <path> <block-size> <blocks>
+  dd if="$1" iflag=nofollow,nonblock bs="$2" count="$3" 2>/dev/null || true
+}
+
 mode=ensure
 case "${1:-}" in
   "") ;;
@@ -47,9 +58,16 @@ case "${1:-}" in
     ;;
 esac
 
-theme=$(cat "$THEME_NAME_FILE" 2>/dev/null || true)
+theme=$(read_guarded "$THEME_NAME_FILE" 1 256 | head -n1)
 [[ -n $theme ]] || {
   echo "omarchy-matrix-preview: no current theme ($THEME_NAME_FILE)" >&2
+  exit 1
+}
+# The name becomes a path component below, so it is checked rather than trusted:
+# a leading dot is refused, which rules out "..", a slash is not in the set, and
+# the length cap keeps a padded file from reaching mkdir as a 255-byte name.
+[[ $theme =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || {
+  echo "omarchy-matrix-preview: refusing implausible theme name ($THEME_NAME_FILE)" >&2
   exit 1
 }
 
@@ -111,13 +129,15 @@ fi
   exit 1
 }
 
-accent=$(sed -n 's/^[[:space:]]*accent[[:space:]]*=[[:space:]]*"\{0,1\}#\{0,1\}\([0-9a-fA-F]\{6\}\)"\{0,1\}.*/\1/p' \
-  "$THEME_COLORS" 2>/dev/null | head -n1)
+accent=$(read_guarded "$THEME_COLORS" 4096 16 |
+  sed -n 's/^[[:space:]]*accent[[:space:]]*=[[:space:]]*"\{0,1\}#\{0,1\}\([0-9a-fA-F]\{6\}\)"\{0,1\}.*/\1/p' |
+  head -n1)
 [[ $accent =~ ^[0-9a-fA-F]{6}$ ]] || accent="cacccc"
 
 # Skip the work when nothing has changed: rewriting would bump the mtime and
 # throw away the picker's cached thumbnail for no reason.
-if [[ $mode != capture && -f $OUT && -f $STAMP && $OUT -nt $MASTER && $(<"$STAMP") == "$accent" ]]; then
+stamped=$(read_guarded "$STAMP" 1 64 | head -n1)
+if [[ $mode != capture && -f $OUT && -f $STAMP && $OUT -nt $MASTER && $stamped == "$accent" ]]; then
   [[ $mode == print ]] && printf '%s\n' "$OUT"
   exit 0
 fi
