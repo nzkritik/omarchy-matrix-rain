@@ -1,14 +1,13 @@
-// Live wallpaper overlay for the Omarchy shell.
+// Live matrix rain wallpaper for the Omarchy shell.
 //
 // Omarchy's own omarchy.background draws stills on the wlr *background* layer,
 // and this plugin never touches it, so it keeps every upstream fix. This one
-// claims the *bottom* layer instead — above the wallpaper, below every window
-// and the bar — and maps itself only while the selected background is
-// something a still Image cannot draw: an animated GIF/WebP, a video, or the
-// built-in matrix rain.
+// claims the *bottom* layer instead -- above the wallpaper, below every window
+// and the bar -- and maps itself only while the rain is the selected
+// background.
 //
-// With a plain image selected the PanelWindow is not mapped at all, so the
-// desktop is bit-for-bit stock and this plugin costs nothing.
+// With any other wallpaper selected the PanelWindow is not mapped at all, so
+// the desktop is bit-for-bit stock and this plugin costs nothing.
 
 import Quickshell
 import Quickshell.Io
@@ -16,10 +15,14 @@ import Quickshell.Wayland
 import QtQuick
 import qs.Commons
 import qs.Ui
-import "Classify.js" as Classify
 
 Item {
   id: root
+
+  // The picker can only list still images, so the rain is represented on disk
+  // by a preview PNG under this name. bin/omarchy-matrix-preview writes it;
+  // change it in both places or not at all.
+  readonly property string rainFile: "zz-matrix-rain.png"
 
   readonly property string home: Quickshell.env("HOME")
   readonly property string backgroundLink: home + "/.local/state/omarchy/current/background"
@@ -32,29 +35,17 @@ Item {
   }
 
   property string currentPath: ""
-  readonly property string kind: Classify.classify(currentPath)
-  readonly property bool live: Classify.isLive(kind)
+  readonly property bool rainSelected: String(currentPath).split("/").pop() === rainFile
 
   // Cross-fades against whatever the stock plugin is showing underneath.
-  // Driving visibility off this (rather than off `live`) keeps the surface
-  // mapped until the fade-out has actually finished.
-  property real fade: live ? 1 : 0
-
-  // Held across the fade-out so the outgoing effect stays on screen while it
-  // dissolves, instead of vanishing the instant a still is selected.
-  property string livePath: ""
-
-  onCurrentPathChanged: {
-    // Classified directly rather than read off `live`, whose binding may not
-    // have re-evaluated yet when this handler runs.
-    if (Classify.isLive(Classify.classify(currentPath))) livePath = currentPath
-  }
+  // Driving visibility off this (rather than off `rainSelected`) keeps the
+  // surface mapped until the fade-out has actually finished.
+  property real fade: rainSelected ? 1 : 0
 
   Behavior on fade {
     NumberAnimation {
       duration: 420
       easing.type: Easing.InOutCubic
-      onFinished: if (root.fade === 0) root.livePath = ""
     }
   }
 
@@ -137,8 +128,8 @@ Item {
   IpcHandler {
     target: "matrix-rain"
 
-    // Selects the rain the same way the picker does — by pointing the normal
-    // background symlink at the preview file — so it survives a restart and
+    // Selects the rain the same way the picker does -- by pointing the normal
+    // background symlink at the preview file -- so it survives a restart and
     // shows as the selected entry in the switcher.
     function select(): void {
       root.useMatrixRain()
@@ -149,7 +140,7 @@ Item {
     }
 
     function status(): string {
-      return root.kind + "\t" + root.currentPath
+      return (root.rainSelected ? "rain" : "still") + "\t" + root.currentPath
     }
   }
 
@@ -184,11 +175,23 @@ Item {
       // right-double-click-for-themes keep working untouched.
       mask: Region {}
 
-      BgSurface {
+      // Behind a Loader source rather than inline, so nothing is instantiated
+      // while another wallpaper is selected, and the renderer is torn down
+      // again once the fade-out finishes.
+      Loader {
+        id: rainLoader
         anchors.fill: parent
         opacity: root.fade
-        path: root.livePath
-        playing: root.fade > 0
+        active: root.fade > 0
+        source: "MatrixRain.qml"
+      }
+
+      Binding {
+        target: rainLoader.item
+        property: "playing"
+        value: root.fade > 0
+        when: rainLoader.item !== null
+        restoreMode: Binding.RestoreNone
       }
     }
   }
