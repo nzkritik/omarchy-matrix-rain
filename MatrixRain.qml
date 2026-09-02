@@ -191,6 +191,15 @@ Item {
         running: rain.playing && rain.ready
         loops: Animation.Infinite
 
+        // Every parameter of the pass below is *assigned* here rather than
+        // bound in the animation. `from`, `to`, `duration` and the pause all
+        // depend on startRow/trail/speed/startDelay, and this animation's own
+        // ScriptActions reassign every one of those -- as a binding that is a
+        // loop, and QML logged one per column on each start. Assigning breaks
+        // the binding for good, and a SequentialAnimation reads each child's
+        // parameters as it reaches it, so setting them one step ahead is
+        // enough. Same numbers, evaluated once per pass instead of on every
+        // dependency change.
         ScriptAction {
           script: {
             if (column.scattered) {
@@ -199,17 +208,19 @@ Item {
               column.scattered = true
               column.startRow = -column.trail + Math.random() * (rain.rows + column.trail)
             }
+            hold.duration = column.startDelay
+            fall.from = column.startRow
+            fall.to = rain.rows + column.trail
+            fall.duration = Math.max(1, Math.round((rain.rows + column.trail - column.startRow) / column.speed * 1000))
           }
         }
         PauseAnimation {
-          duration: column.startDelay
+          id: hold
         }
         NumberAnimation {
+          id: fall
           target: column
           property: "headRow"
-          from: column.startRow
-          to: rain.rows + column.trail
-          duration: Math.max(1, Math.round((rain.rows + column.trail - column.startRow) / column.speed * 1000))
         }
         // Re-randomise between passes so streams drift out of phase instead of
         // settling into a visible repeating pattern.
