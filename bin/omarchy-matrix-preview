@@ -21,7 +21,7 @@
 
 set -euo pipefail
 
-# Must match RAIN_FILE in Classify.js.
+# Must match rainFile in Service.qml.
 RAIN_FILE="zz-matrix-rain.png"
 
 SELF=$(readlink -f "$0")
@@ -32,9 +32,18 @@ STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-matrix-rain"
 THEME_NAME_FILE="$HOME/.local/state/omarchy/current/theme.name"
 THEME_COLORS="$HOME/.local/state/omarchy/current/theme/colors.toml"
 
+fail() {
+  echo "omarchy-matrix-preview: $*" >&2
+  exit 1
+}
+
+# --- untrusted-path discipline -----------------------------------------------
+#
 # Every path below is predictable and writable by anything running as this user,
-# so whatever is sitting at one is untrusted input. All reads of them go through
-# here: iflag=nofollow refuses a symlink rather than following it somewhere else,
+# so whatever is sitting at one is untrusted input -- on the way in and on the
+# way out.
+
+# iflag=nofollow refuses a symlink rather than following it somewhere else,
 # nonblock means a planted FIFO returns immediately instead of wedging this
 # process, and count bounds how much a swollen replacement can hand back. The
 # read is best-effort by design -- a caller that gets nothing reports its own
@@ -43,13 +52,59 @@ read_guarded() { # <path> <block-size> <blocks>
   dd if="$1" iflag=nofollow,nonblock bs="$2" count="$3" 2>/dev/null || true
 }
 
+# A directory we are about to write into must be a real directory, reached
+# without traversing a symlink at the final component.
+require_real_dir() {
+  [[ -L $1 ]] && fail "refusing to use $1: it is a symlink"
+  [[ -d $1 ]] || fail "not a directory: $1"
+  return 0
+}
+
+# A file we are about to replace must be absent, or a plain regular file that
+# is not a symlink. A link at the target would redirect the write into another
+# of the user's files; a FIFO or device would block or swallow it.
+require_plain_target() {
+  [[ -L $1 ]] && fail "refusing to write $1: it is a symlink"
+  [[ -e $1 && ! -f $1 ]] && fail "refusing to write $1: not a regular file"
+  return 0
+}
+
+# Stage a temp file beside the destination -- same directory, so the commit is
+# a rename within one filesystem and cannot fall back to a copy. Created 0600
+# by mktemp and relaxed only once, so no partial file is ever world-readable
+# under a name anything else is looking for.
+stage_tmp() { # <dest> -> prints tmp path
+  local dir tmp
+  dir=${1%/*}
+  require_real_dir "$dir"
+  require_plain_target "$1"
+  tmp=$(mktemp "$dir/.omarchy-matrix-preview.XXXXXX") || fail "could not stage a write in $dir"
+  printf '%s' "$tmp"
+}
+
+# Flush, recheck the target, then rename. The recheck narrows the window in
+# which the destination could be swapped for a link between staging and commit;
+# bash cannot hold a directory descriptor across the rename, so this is a bound
+# on the race rather than the elimination of it. The rename itself does not
+# follow a symlink at the destination, so the worst case is a refusal.
+commit_tmp() { # <tmp> <dest>
+  chmod 0644 "$1"
+  sync "$1" 2>/dev/null || sync
+  require_plain_target "$2"
+  mv -f "$1" "$2" || { rm -f "$1"; fail "could not install $2"; }
+}
+
+discard_tmp() { rm -f "$1" 2>/dev/null || true; }
+
+# -----------------------------------------------------------------------------
+
 mode=ensure
 case "${1:-}" in
   "") ;;
   --print-path) mode=print ;;
   --capture) mode=capture ;;
   -h | --help)
-    sed -n '3,22p' "$SELF" | sed 's/^# \{0,1\}//'
+    sed -n '3,21p' "$SELF" | sed 's/^# \{0,1\}//'
     exit 0
     ;;
   *)
@@ -59,17 +114,12 @@ case "${1:-}" in
 esac
 
 theme=$(read_guarded "$THEME_NAME_FILE" 1 256 | head -n1)
-[[ -n $theme ]] || {
-  echo "omarchy-matrix-preview: no current theme ($THEME_NAME_FILE)" >&2
-  exit 1
-}
+[[ -n $theme ]] || fail "no current theme ($THEME_NAME_FILE)"
 # The name becomes a path component below, so it is checked rather than trusted:
 # a leading dot is refused, which rules out "..", a slash is not in the set, and
 # the length cap keeps a padded file from reaching mkdir as a 255-byte name.
-[[ $theme =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || {
-  echo "omarchy-matrix-preview: refusing implausible theme name ($THEME_NAME_FILE)" >&2
-  exit 1
-}
+[[ $theme =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] ||
+  fail "refusing implausible theme name ($THEME_NAME_FILE)"
 
 OUT_DIR="$HOME/.config/omarchy/backgrounds/$theme"
 OUT="$OUT_DIR/$RAIN_FILE"
@@ -80,12 +130,10 @@ if [[ $mode == capture ]]; then
   # grim captures whatever is composited, so a window anywhere on the active
   # workspace would be baked into the wallpaper preview.
   if [[ $(hyprctl activeworkspace -j | jq -r '.windows') != "0" ]]; then
-    echo "omarchy-matrix-preview: the active workspace has windows on it; clear the screen or switch to an empty workspace first" >&2
-    exit 1
+    fail "the active workspace has windows on it; clear the screen or switch to an empty workspace first"
   fi
   if [[ $(readlink -f "$HOME/.local/state/omarchy/current/background" 2>/dev/null) != "$OUT" ]]; then
-    echo "omarchy-matrix-preview: select the matrix rain first (omarchy-shell matrix-rain select)" >&2
-    exit 1
+    fail "select the matrix rain first (omarchy-shell matrix-rain select)"
   fi
 
   shot=$(mktemp --suffix=.png)
@@ -120,14 +168,21 @@ if [[ $mode == capture ]]; then
   # reads as a muddy version of the theme colour. Upscaled so the glyphs
   # survive being thumbnailed by the picker, and desaturated because the tint
   # supplies the colour.
-  magick "$shot" -crop "$best_geom" +repage \
-    -colorspace Gray -auto-level -filter Lanczos -resize '1920x1080!' "$MASTER"
+  #
+  # Staged and renamed like every other write here: this one lands inside the
+  # plugin's own directory, but that is under $HOME and no more trustworthy for
+  # it. An explicit PNG: prefix because the temp name has no extension.
+  master_tmp=$(stage_tmp "$MASTER")
+  if ! magick "$shot" -crop "$best_geom" +repage \
+    -colorspace Gray -auto-level -filter Lanczos -resize '1920x1080!' PNG:"$master_tmp"; then
+    discard_tmp "$master_tmp"
+    fail "could not rebuild the master image"
+  fi
+  commit_tmp "$master_tmp" "$MASTER"
 fi
 
-[[ -r $MASTER ]] || {
-  echo "omarchy-matrix-preview: missing master image: $MASTER" >&2
-  exit 1
-}
+[[ -f $MASTER && ! -L $MASTER && -r $MASTER ]] ||
+  fail "missing or unusable master image: $MASTER"
 
 accent=$(read_guarded "$THEME_COLORS" 4096 16 |
   sed -n 's/^[[:space:]]*accent[[:space:]]*=[[:space:]]*"\{0,1\}#\{0,1\}\([0-9a-fA-F]\{6\}\)"\{0,1\}.*/\1/p' |
@@ -135,20 +190,35 @@ accent=$(read_guarded "$THEME_COLORS" 4096 16 |
 [[ $accent =~ ^[0-9a-fA-F]{6}$ ]] || accent="cacccc"
 
 # Skip the work when nothing has changed: rewriting would bump the mtime and
-# throw away the picker's cached thumbnail for no reason.
+# throw away the picker's cached thumbnail for no reason. -f and -nt both follow
+# links, so the no-symlink test comes first -- otherwise a link planted at $OUT
+# could make this look fresh and skip a write that would have refused.
 stamped=$(read_guarded "$STAMP" 1 64 | head -n1)
-if [[ $mode != capture && -f $OUT && -f $STAMP && $OUT -nt $MASTER && $stamped == "$accent" ]]; then
+if [[ $mode != capture && ! -L $OUT && -f $OUT && ! -L $STAMP && -f $STAMP &&
+  $OUT -nt $MASTER && $stamped == "$accent" ]]; then
   [[ $mode == print ]] && printf '%s\n' "$OUT"
   exit 0
 fi
 
 mkdir -p "$OUT_DIR" "$STATE_DIR"
+require_real_dir "$OUT_DIR"
+require_real_dir "$STATE_DIR"
 
 # The master is a luminance ramp over black, which is exactly the shape
 # +level-colors wants: black stays black, white becomes the accent, and the
 # tails in between land on the same gradient the renderer draws.
-magick "$MASTER" +level-colors "black,#$accent" -colorspace sRGB PNG24:"$OUT"
-printf '%s' "$accent" >"$STAMP"
+out_tmp=$(stage_tmp "$OUT")
+if ! magick "$MASTER" +level-colors "black,#$accent" -colorspace sRGB PNG24:"$out_tmp"; then
+  discard_tmp "$out_tmp"
+  fail "could not render the preview"
+fi
+commit_tmp "$out_tmp" "$OUT"
+
+# Written only after the preview it describes is in place, so an interrupted
+# run leaves the stamp stale rather than claiming work that did not happen.
+stamp_tmp=$(stage_tmp "$STAMP")
+printf '%s' "$accent" >"$stamp_tmp" || { discard_tmp "$stamp_tmp"; fail "could not record the accent"; }
+commit_tmp "$stamp_tmp" "$STAMP"
 
 [[ $mode == print ]] && printf '%s\n' "$OUT"
 exit 0
