@@ -190,8 +190,15 @@ require_master() {
 # runs in a subshell: fail() there ends that theme, not the sweep.
 if [[ $mode == all ]]; then
   require_master
+  # The packaged theme directory is a fixed system path, not $OMARCHY_PATH. The
+  # environment is attacker-controlled input like any other predictable path,
+  # and taking a directory to enumerate from it is the one thing in this script
+  # that would let something outside $HOME steer where it looks. A non-default
+  # Omarchy prefix therefore only loses the seeding of its stock themes; the
+  # theme in use is still refreshed through the normal path, and user themes
+  # under $HOME are unaffected.
   seen=" "
-  for dir in "$HOME/.config/omarchy/themes"/*/ "${OMARCHY_PATH:-/usr/share/omarchy}/themes"/*/; do
+  for dir in "$HOME/.config/omarchy/themes"/*/ /usr/share/omarchy/themes/*/; do
     [[ -d $dir ]] || continue
     name=${dir%/}
     name=${name##*/}
