@@ -15,6 +15,7 @@
 #
 #   (no arguments)   ensure the preview exists and matches the theme
 #   --print-path     the same, then print the path (used to select the rain)
+#   --all            ensure a preview exists for EVERY installed theme
 #   --capture        rebuild the grayscale master from the running rain
 #
 # Requires: ImageMagick. --capture additionally needs grim, jq and hyprctl.
@@ -102,7 +103,8 @@ mode=ensure
 case "${1:-}" in
   "") ;;
   --print-path) mode=print ;;
-  --capture) mode=capture ;;
+  --all) mode=all ;;
+  --capture) mode=capture; force_render=1 ;;
   -h | --help)
     sed -n '3,21p' "$SELF" | sed 's/^# \{0,1\}//'
     exit 0
@@ -113,18 +115,101 @@ case "${1:-}" in
     ;;
 esac
 
+# The name becomes a path component, so it is checked rather than trusted: a
+# leading dot is refused, which rules out "..", a slash is not in the set, and
+# the length cap keeps a padded name from reaching mkdir as a 255-byte one.
+valid_theme_name() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]; }
+
+# A theme with no readable accent still gets an entry, in the neutral grey the
+# renderer falls back to, rather than being left out of the picker entirely.
+read_accent() { # <colors.toml>
+  local a
+  a=$(read_guarded "$1" 4096 16 |
+    sed -n 's/^[[:space:]]*accent[[:space:]]*=[[:space:]]*"\{0,1\}#\{0,1\}\([0-9a-fA-F]\{6\}\)"\{0,1\}.*/\1/p' |
+    head -n1)
+  [[ $a =~ ^[0-9a-fA-F]{6}$ ]] || a="cacccc"
+  printf '%s' "$a"
+}
+
+# Renders one theme's preview, or does nothing when the one on disk already
+# matches. Skipping matters: rewriting bumps the mtime and throws away the
+# picker's cached thumbnail for no reason. -f and -nt both follow links, so the
+# no-symlink test comes first -- otherwise a link planted at the destination
+# could make this look fresh and skip a write that would have refused.
+render_theme() { # <theme> <accent> [force]
+  local theme=$1 accent=$2 force=${3:-}
+  local out_dir="$HOME/.config/omarchy/backgrounds/$theme"
+  local out="$out_dir/$RAIN_FILE"
+  # Kept out of the background folder so the picker never sees a stray file.
+  local stamp="$STATE_DIR/$theme.accent"
+  local stamped out_tmp stamp_tmp
+
+  stamped=$(read_guarded "$stamp" 1 64 | head -n1)
+  if [[ -z $force && ! -L $out && -f $out && ! -L $stamp && -f $stamp &&
+    $out -nt $MASTER && $stamped == "$accent" ]]; then
+    return 0
+  fi
+
+  mkdir -p "$out_dir" "$STATE_DIR"
+  require_real_dir "$out_dir"
+  require_real_dir "$STATE_DIR"
+
+  # The master is a luminance ramp over black, which is exactly the shape
+  # +level-colors wants: black stays black, white becomes the accent, and the
+  # tails in between land on the same gradient the renderer draws.
+  out_tmp=$(stage_tmp "$out")
+  if ! magick "$MASTER" +level-colors "black,#$accent" -colorspace sRGB PNG24:"$out_tmp"; then
+    discard_tmp "$out_tmp"
+    fail "could not render the preview for $theme"
+  fi
+  commit_tmp "$out_tmp" "$out"
+
+  # Written only after the preview it describes is in place, so an interrupted
+  # run leaves the stamp stale rather than claiming work that did not happen.
+  stamp_tmp=$(stage_tmp "$stamp")
+  printf '%s' "$accent" >"$stamp_tmp" || { discard_tmp "$stamp_tmp"; fail "could not record the accent"; }
+  commit_tmp "$stamp_tmp" "$stamp"
+}
+
+require_master() {
+  [[ -f $MASTER && ! -L $MASTER && -r $MASTER ]] ||
+    fail "missing or unusable master image: $MASTER"
+}
+
+# --all: seed every installed theme, so the rain is in the picker the first time
+# a theme is opened rather than about a second later.
+#
+# The picker enumerates ~/.config/omarchy/backgrounds/<theme> live each time it
+# opens, so an entry that is not on disk yet is simply absent from the list --
+# with no error and nothing to retry. Writing the preview only for the theme in
+# use loses that race on a theme's first visit, which is precisely when a user
+# goes looking for a new background.
+#
+# A user theme shadows a stock one of the same name, so it is taken first and
+# the stock copy skipped. One bad theme must not cost the rest, so each render
+# runs in a subshell: fail() there ends that theme, not the sweep.
+if [[ $mode == all ]]; then
+  require_master
+  seen=" "
+  for dir in "$HOME/.config/omarchy/themes"/*/ "${OMARCHY_PATH:-/usr/share/omarchy}/themes"/*/; do
+    [[ -d $dir ]] || continue
+    name=${dir%/}
+    name=${name##*/}
+    valid_theme_name "$name" || continue
+    [[ $seen == *" $name "* ]] && continue
+    seen+="$name "
+    (render_theme "$name" "$(read_accent "$dir/colors.toml")") ||
+      echo "omarchy-matrix-preview: skipped $name" >&2
+  done
+  exit 0
+fi
+
 theme=$(read_guarded "$THEME_NAME_FILE" 1 256 | head -n1)
 [[ -n $theme ]] || fail "no current theme ($THEME_NAME_FILE)"
-# The name becomes a path component below, so it is checked rather than trusted:
-# a leading dot is refused, which rules out "..", a slash is not in the set, and
-# the length cap keeps a padded file from reaching mkdir as a 255-byte name.
-[[ $theme =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] ||
-  fail "refusing implausible theme name ($THEME_NAME_FILE)"
+valid_theme_name "$theme" || fail "refusing implausible theme name ($THEME_NAME_FILE)"
 
 OUT_DIR="$HOME/.config/omarchy/backgrounds/$theme"
 OUT="$OUT_DIR/$RAIN_FILE"
-# Kept out of the background folder so the picker never sees a stray file.
-STAMP="$STATE_DIR/$theme.accent"
 
 if [[ $mode == capture ]]; then
   # grim captures whatever is composited, so a window anywhere on the active
@@ -181,44 +266,10 @@ if [[ $mode == capture ]]; then
   commit_tmp "$master_tmp" "$MASTER"
 fi
 
-[[ -f $MASTER && ! -L $MASTER && -r $MASTER ]] ||
-  fail "missing or unusable master image: $MASTER"
+require_master
 
-accent=$(read_guarded "$THEME_COLORS" 4096 16 |
-  sed -n 's/^[[:space:]]*accent[[:space:]]*=[[:space:]]*"\{0,1\}#\{0,1\}\([0-9a-fA-F]\{6\}\)"\{0,1\}.*/\1/p' |
-  head -n1)
-[[ $accent =~ ^[0-9a-fA-F]{6}$ ]] || accent="cacccc"
-
-# Skip the work when nothing has changed: rewriting would bump the mtime and
-# throw away the picker's cached thumbnail for no reason. -f and -nt both follow
-# links, so the no-symlink test comes first -- otherwise a link planted at $OUT
-# could make this look fresh and skip a write that would have refused.
-stamped=$(read_guarded "$STAMP" 1 64 | head -n1)
-if [[ $mode != capture && ! -L $OUT && -f $OUT && ! -L $STAMP && -f $STAMP &&
-  $OUT -nt $MASTER && $stamped == "$accent" ]]; then
-  [[ $mode == print ]] && printf '%s\n' "$OUT"
-  exit 0
-fi
-
-mkdir -p "$OUT_DIR" "$STATE_DIR"
-require_real_dir "$OUT_DIR"
-require_real_dir "$STATE_DIR"
-
-# The master is a luminance ramp over black, which is exactly the shape
-# +level-colors wants: black stays black, white becomes the accent, and the
-# tails in between land on the same gradient the renderer draws.
-out_tmp=$(stage_tmp "$OUT")
-if ! magick "$MASTER" +level-colors "black,#$accent" -colorspace sRGB PNG24:"$out_tmp"; then
-  discard_tmp "$out_tmp"
-  fail "could not render the preview"
-fi
-commit_tmp "$out_tmp" "$OUT"
-
-# Written only after the preview it describes is in place, so an interrupted
-# run leaves the stamp stale rather than claiming work that did not happen.
-stamp_tmp=$(stage_tmp "$STAMP")
-printf '%s' "$accent" >"$stamp_tmp" || { discard_tmp "$stamp_tmp"; fail "could not record the accent"; }
-commit_tmp "$stamp_tmp" "$STAMP"
+accent=$(read_accent "$THEME_COLORS")
+render_theme "$theme" "$accent" "${force_render:-}"
 
 [[ $mode == print ]] && printf '%s\n' "$OUT"
 exit 0

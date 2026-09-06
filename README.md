@@ -35,7 +35,7 @@ omarchy-shell matrix-rain select
 - ImageMagick — generates the picker entry
 
 Both ship with Omarchy. `inotifywait` is used when present; without it the
-plugin falls back to a one-second poll.
+plugin falls back to polling.
 
 ## Use
 
@@ -50,6 +50,27 @@ omarchy-shell matrix-rain lockState # whether the pause-while-locked wiring foun
 ```
 
 Any other wallpaper is drawn by the stock background plugin exactly as before.
+
+### Every theme, from the first time you open it
+
+The picker only lists still images, so the rain is represented by a preview PNG
+written into `~/.config/omarchy/backgrounds/<theme>/`. The picker reads that
+folder live each time it opens, so the preview has to already be on disk.
+
+The plugin therefore seeds a preview for **every installed theme** shortly after
+the shell starts, and again after any theme change so themes installed later are
+picked up. Without it the entry only existed for themes you had opened since
+installing the plugin, and switching to a new theme left a ~1s window — longer
+than it takes to go from switching theme to opening the background picker — in
+which the rain was silently absent from the list.
+
+The sweep is idempotent and stamped per theme: about 3s the first time, and a
+tenth of a second of `stat` calls after that. A theme with no readable accent
+still gets an entry, in a neutral grey. You can run it by hand:
+
+```bash
+~/.config/omarchy/plugins/nzkritik.matrix-rain/bin/omarchy-matrix-preview --all
+```
 
 ### It stops while the session is locked
 
@@ -102,15 +123,16 @@ rain, clear the screen or switch to an empty workspace, and run
 ## How the rain gets into the picker
 
 Omarchy's picker can only list still images, so the rain is represented by a
-preview PNG named `zz-matrix-rain.png`, written into the **current theme's**
-user background folder — a directory the stock picker already scans. Selecting
-it symlinks that path like any wallpaper, and the plugin recognises the name and
-draws the live effect instead of the still.
+preview PNG named `zz-matrix-rain.png`, written into a theme's user background
+folder — a directory the stock picker already scans. Selecting it symlinks that
+path like any wallpaper, and the plugin recognises the name and draws the live
+effect instead of the still.
 
 Nothing overrides a packaged command and there is no hook to install: the plugin
-watches `~/.local/state/omarchy/current/theme.name` and re-tints the preview
-itself when the theme changes. Files are created lazily, so only themes you
-actually use get one.
+watches `~/.local/state/omarchy/current/theme.name`, re-tints the current theme's
+preview when the theme changes, and seeds every other installed theme ahead of
+time — see *Every theme, from the first time you open it* above for why that
+matters.
 
 Two consequences: `omarchy theme bg next` cycles through the rain along with
 that theme's other backgrounds, and uninstalling leaves the preview files
@@ -150,7 +172,7 @@ rm -rf ~/.local/state/omarchy-matrix-rain
 | --- | --- |
 | `Service.qml` | The bottom-layer overlay, the background watcher, preview upkeep, and the `matrix-rain` IPC target |
 | `MatrixRain.qml` | The rain — falling glyph columns with a head/body/tail gradient off `Color.accent` |
-| `bin/omarchy-matrix-preview` | Writes and tints the picker entry |
+| `bin/omarchy-matrix-preview` | Writes and tints the picker entry, for the current theme or every installed one (`--all`) |
 
 The overlay uses an empty input region (`mask: Region {}`), so clicks fall
 straight through to the layer underneath and double-click-to-open-the-picker

@@ -144,6 +144,10 @@ Item {
     if (!previewProc.running) previewProc.running = true
   }
 
+  function seedAllThemes() {
+    if (!seedProc.running) seedProc.running = true
+  }
+
   // omarchy-theme-bg-set only writes a symlink and pushes to the stock
   // plugin's IPC, so there is no event to subscribe to. Watch the directory
   // the link lives in and re-resolve on any change; fall back to a slow poll
@@ -166,6 +170,25 @@ Item {
   Process {
     id: previewProc
     command: ["bash", "-c", root.pickBin + 'exec "$bin"', root.bundledPreview]
+  }
+
+  // Writes the preview into EVERY installed theme's background folder, not just
+  // the one in use.
+  //
+  // The picker enumerates that folder live each time it opens, so a preview
+  // that has not been written yet is simply absent from the list -- no error,
+  // nothing to retry. Refreshing only the current theme loses that race the
+  // first time a theme is opened: measured here at ~1s between the theme
+  // landing and the preview existing, which is slower than a user going
+  // straight from switching theme to picking a background. Seeding ahead means
+  // the entry is already on disk before the theme is ever selected.
+  //
+  // Idempotent and stamped per theme: ~3s the first time, ~0.1s of stat calls
+  // afterwards, so it is cheap to re-run on every theme change to catch themes
+  // installed since.
+  Process {
+    id: seedProc
+    command: ["bash", "-c", root.pickBin + 'exec "$bin" --all', root.bundledPreview]
   }
 
   Process {
@@ -197,7 +220,10 @@ Item {
     // A theme switch rewrites several files at once; coalesce into one run.
     interval: 400
     repeat: false
-    onTriggered: root.refreshPreview()
+    onTriggered: {
+      root.refreshPreview()
+      root.seedAllThemes()
+    }
   }
 
   IpcHandler {
@@ -227,6 +253,15 @@ Item {
   }
 
   Component.onCompleted: refreshPreview()
+
+  // The current theme is refreshed immediately above; the full sweep is held
+  // back so it is not competing with the rest of the shell coming up.
+  Timer {
+    interval: 4000
+    repeat: false
+    running: true
+    onTriggered: root.seedAllThemes()
+  }
 
   Variants {
     model: Quickshell.screens
