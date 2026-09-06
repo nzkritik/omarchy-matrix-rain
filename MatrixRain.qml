@@ -16,6 +16,16 @@ Item {
 
   property bool playing: true
 
+  // Freezes every stream mid-fall and resumes it exactly where it stopped.
+  //
+  // Deliberately NOT done by clearing `playing`: that stops the
+  // SequentialAnimation outright, and a *stopped* animation restarts at its
+  // opening ScriptAction with `scattered` already true, so every column re-enters
+  // at `-trail` together and the whole screen visibly rains in from the top --
+  // the regression 03a6671 fixed and 8a9a67d kept out of the tree. Pausing does
+  // not run that ScriptAction at all, so the scatter state is never disturbed.
+  property bool paused: false
+
   // `columns` and `rows` are independent bindings off width and height, and the
   // Repeater rebuilds every delegate the moment `columns` updates -- which can
   // start a column's animation while `rows` still holds its pre-resize value.
@@ -189,6 +199,10 @@ Item {
 
       SequentialAnimation {
         running: rain.playing && rain.ready
+        // Only ever asserted while the animation is actually running -- Qt logs
+        // "setPaused() cannot be used when animation isn't running" for a bare
+        // `paused:` binding, once per column here.
+        paused: running && rain.paused
         loops: Animation.Infinite
 
         ScriptAction {
@@ -223,7 +237,7 @@ Item {
   // One timer churning a slice of the columns each tick, rather than a timer
   // per column.
   Timer {
-    running: rain.playing && rain.visible
+    running: rain.playing && rain.visible && !rain.paused
     interval: rain.churnInterval
     repeat: true
     onTriggered: {

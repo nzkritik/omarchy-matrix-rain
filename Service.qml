@@ -24,6 +24,11 @@ Item {
   // change it in both places or not at all.
   readonly property string rainFile: "zz-matrix-rain.png"
 
+  // Assigned by the shell host after construction (shell.qml sets any service
+  // property named `shell`). It is the only supported way to reach another
+  // plugin's service instance.
+  property var shell: null
+
   readonly property string home: Quickshell.env("HOME")
   readonly property string backgroundLink: home + "/.local/state/omarchy/current/background"
   readonly property string themeNamePath: home + "/.local/state/omarchy/current/theme.name"
@@ -46,6 +51,76 @@ Item {
     NumberAnimation {
       duration: 420
       easing.type: Easing.InOutCubic
+    }
+  }
+
+  // ------------------------------------------------------------- lock state
+  //
+  // A WlSessionLock surface covers every layer-shell surface, so while the
+  // session is locked this wallpaper is drawn where nothing can see it, and a
+  // few seconds later the lock screen blanks the display on top of that.
+  // Animating for an audience of nobody is pure GPU load, so freeze the rain
+  // for the duration and resume it on a successful unlock.
+  //
+  // The lock plugin is read through the shell's own service table rather than
+  // by polling `omarchy-hyprland-session-locked`: no subprocess per tick, and
+  // lock.Service's `locked` is already exactly the state wanted -- it clears
+  // only inside unlock(), after PAM has accepted the password.
+  //
+  // Never hardcode `omarchy.lock`. Cloning is how a built-in plugin gets
+  // customised, and a clone runs under its own id with the built-in disabled;
+  // resolveEnabledId() maps the built-in id onto whichever implementation is
+  // actually enabled.
+  readonly property string lockPluginId: {
+    var reg = root.shell ? root.shell.pluginRegistry : null
+    if (!reg || typeof reg.resolveEnabledId !== "function") return "omarchy.lock"
+    var revision = reg.registryRevision // re-resolve when a clone appears
+    return reg.resolveEnabledId("omarchy.lock") || "omarchy.lock"
+  }
+
+  property var lockService: null
+
+  // `locked` covers the real thing. `previewVisible` is the lock view shown by
+  // `omarchy-shell lock preview` -- not a session lock, but it covers the screen
+  // just the same, so the rain is equally invisible behind it. Honouring both
+  // also makes this whole feature checkable without locking yourself out.
+  readonly property bool lockCovered: {
+    var svc = root.lockService
+    if (!svc) return false
+    if (svc.locked === true) return true
+    return ("previewVisible" in svc) && svc.previewVisible === true
+  }
+
+  // Kept as the name the rest of the file reads.
+  readonly property bool sessionLocked: root.lockCovered
+
+  function resolveLockService() {
+    var s = root.shell
+    var svc = (s && typeof s.serviceFor === "function") ? s.serviceFor(root.lockPluginId) : null
+    root.lockService = (svc && "locked" in svc) ? svc : null
+  }
+
+  onLockPluginIdChanged: {
+    root.lockService = null
+    lockResolve.attempts = 0
+    root.resolveLockService()
+  }
+
+  // Nothing orders one plugin service ahead of another, so the lock service may
+  // not exist yet when this one is built. Retry briefly and stop the moment it
+  // resolves. If it never does -- lock plugin removed, or upstream moved the
+  // service table -- the rain simply keeps running, which is the safe fallback:
+  // a wallpaper that animates too much beats one frozen for good.
+  Timer {
+    id: lockResolve
+    property int attempts: 0
+    interval: 500
+    repeat: true
+    triggeredOnStart: true
+    running: root.shell !== null && root.lockService === null && attempts < 20
+    onTriggered: {
+      attempts++
+      root.resolveLockService()
     }
   }
 
@@ -140,7 +215,14 @@ Item {
     }
 
     function status(): string {
-      return (root.rainSelected ? "rain" : "still") + "\t" + root.currentPath
+      var state = !root.rainSelected ? "idle" : (root.sessionLocked ? "paused" : "playing")
+      return (root.rainSelected ? "rain" : "still") + "\t" + root.currentPath + "\t" + state
+    }
+
+    // Whether the pause is wired up at all, separately from whether it is
+    // currently engaged -- "detached" means the lock service was never found.
+    function lockState(): string {
+      return (root.lockService ? "attached" : "detached") + "\t" + root.lockPluginId + "\t" + (root.sessionLocked ? "locked" : "unlocked")
     }
   }
 
@@ -190,6 +272,14 @@ Item {
         target: rainLoader.item
         property: "playing"
         value: root.fade > 0
+        when: rainLoader.item !== null
+        restoreMode: Binding.RestoreNone
+      }
+
+      Binding {
+        target: rainLoader.item
+        property: "paused"
+        value: root.sessionLocked
         when: rainLoader.item !== null
         restoreMode: Binding.RestoreNone
       }

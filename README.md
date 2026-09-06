@@ -44,15 +44,35 @@ empty part of the desktop, or Menu → Style → Background — under **every** 
 and it takes the theme's accent colour.
 
 ```bash
-omarchy-shell matrix-rain select   # the rain
-omarchy-shell matrix-rain status   # what is selected, and from where
+omarchy-shell matrix-rain select    # the rain
+omarchy-shell matrix-rain status    # what is selected, from where, and idle/playing/paused
+omarchy-shell matrix-rain lockState # whether the pause-while-locked wiring found the lock plugin
 ```
 
 Any other wallpaper is drawn by the stock background plugin exactly as before.
 
-### On the lock screen
+### It stops while the session is locked
 
-Rain on the lock screen is a separate plugin,
+A session lock covers every layer-shell surface, so a locked screen hides this
+wallpaper completely — and the lock screen blanks the display a few seconds
+after that. Animating behind it is wasted work, so the rain freezes while the
+session is locked (and while the lock *preview* is up) and resumes on a
+successful unlock.
+
+It freezes mid-fall and resumes from exactly where it stopped, rather than
+restarting, so unlocking never shows the screen filling from the top. Measured
+on a 4K display, the shell drops from roughly 9% CPU to none at all for as long
+as the lock is up.
+
+The lock plugin is found through the shell's service table, and a clone is
+resolved by `resolveEnabledId`, so this keeps working if you customise the lock
+screen. If no lock plugin is found the rain just keeps running —
+`matrix-rain lockState` reports `attached` or `detached`.
+
+### Rain *on* the lock screen
+
+Making the lock screen itself draw rain — as opposed to pausing the wallpaper
+behind it, above — is a separate plugin,
 [Matrix Lock](https://github.com/nzkritik/omarchy-matrix-lock). It has to clone
 and patch the built-in `omarchy.lock` plugin, which is a good deal more invasive
 than a wallpaper, so it is kept out of this one — install it only if you want
