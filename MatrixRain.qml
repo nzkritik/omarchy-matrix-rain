@@ -129,8 +129,8 @@ Item {
       // built cold every time it is shown, such as the lock screen.
       // Initialised to a literal, never a binding: `-trail` here would bind
       // startRow to `trail`, which respawn() reassigns from inside this same
-      // animation -- QML then flags a binding loop on the NumberAnimation's
-      // `from`. The opening ScriptAction sets this before every pass anyway.
+      // animation -- QML then flags a binding loop. The opening ScriptAction
+      // sets this, and the animation's from/to/duration, before every pass.
       property real startRow: 0
 
       // Four flat colour bands instead of a true per-column gradient. A
@@ -213,17 +213,25 @@ Item {
               column.scattered = true
               column.startRow = -column.trail + Math.random() * (rain.rows + column.trail)
             }
+            // `from`, `to` and `duration` are ASSIGNED here, never bound on the
+            // NumberAnimation. Each of them reads a column property that this
+            // same animation reassigns -- startRow just above, trail and speed
+            // in the closing respawn() -- and re-evaluating a binding on a
+            // running animation re-enters it, so QML flags whichever one it
+            // evaluates first as a binding loop. Fixing only `from` just moves
+            // the warning to `duration`; all three have to be assignments.
+            headAnim.from = column.startRow
+            headAnim.to = rain.rows + column.trail
+            headAnim.duration = Math.max(1, Math.round((rain.rows + column.trail - column.startRow) / column.speed * 1000))
           }
         }
         PauseAnimation {
           duration: column.startDelay
         }
         NumberAnimation {
+          id: headAnim
           target: column
           property: "headRow"
-          from: column.startRow
-          to: rain.rows + column.trail
-          duration: Math.max(1, Math.round((rain.rows + column.trail - column.startRow) / column.speed * 1000))
         }
         // Re-randomise between passes so streams drift out of phase instead of
         // settling into a visible repeating pattern.
