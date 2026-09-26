@@ -90,6 +90,19 @@ resolved by `resolveEnabledId`, so this keeps working if you customise the lock
 screen. If no lock plugin is found the rain just keeps running —
 `matrix-rain lockState` reports `attached` or `detached`.
 
+### Drawn on the GPU
+
+The rain is one fragment shader: every column is a function of time worked out
+on the GPU, so the CPU only advances a clock, 30 times a second. Measured at
+1920x1080, that is about 2% of a core, against about 25% for the earlier
+version, which moved a stack of text items per column.
+
+Where there is no GPU to use (a software-rendered scene graph, or a shader
+that fails to load), the rain falls back to that text-item renderer on its own.
+It looks the same and costs more. The journal says
+`matrix rain: shader unavailable, falling back to the CPU renderer` when that
+happens.
+
 ### Rain *on* the lock screen
 
 Making the lock screen itself draw rain — as opposed to pausing the wallpaper
@@ -101,16 +114,17 @@ it, and nothing here changes either way.
 
 ### Tuning the rain
 
-Every knob is a `readonly property` at the top of `MatrixRain.qml` — glyph grid
-pitch, fall speed range, trail lengths, how often glyphs mutate, and the
-alphabet itself. Edit and run `omarchy restart shell`.
+Every knob is a `readonly property` at the top of `MatrixRainGpu.qml`: glyph
+grid pitch, fall speed range, trail lengths, how often glyphs mutate, and the
+alphabet itself. `MatrixRainCpu.qml` has the same knobs for the fallback. Edit
+and run `omarchy restart shell`.
 
 | Property | Default | What it does |
 | --- | --- | --- |
 | `cell` | 16 | Glyph grid pitch in px. Smaller is denser |
 | `minSpeed` / `maxSpeed` | 2.5 / 8.0 | Fall speed range, in grid rows per second |
 | `minTrail` / `maxTrail` | 14 / 48 | Glyphs per falling stream |
-| `churnInterval` | 90 | ms between glyph mutations |
+| `churn` | 0.045 | Glyph flickers per second, per glyph (`churnInterval`, ms between mutations, in the CPU version) |
 | `alphabet` | katakana + digits | The glyph set |
 
 After changing the look, refresh the picker thumbnail so it matches: select the
@@ -171,7 +185,10 @@ rm -rf ~/.local/state/omarchy-matrix-rain
 | File | Role |
 | --- | --- |
 | `Service.qml` | The bottom-layer overlay, the background watcher, preview upkeep, and the `matrix-rain` IPC target |
-| `MatrixRain.qml` | The rain — falling glyph columns with a head/body/tail gradient off `Color.accent` |
+| `MatrixRain.qml` | The rain: picks the GPU renderer, or the CPU one when there is no GPU scene graph or the shader fails |
+| `MatrixRainGpu.qml`, `rain.frag` | The GPU renderer: a glyph atlas and one fragment shader with the head/body/tail gradient off `Color.accent` |
+| `rain.frag.qsb` | `rain.frag` compiled for Qt 6, which only loads precompiled shaders. `tools/build-shaders.sh` rebuilds it, byte for byte |
+| `MatrixRainCpu.qml` | The CPU fallback: falling columns of text items |
 | `bin/omarchy-matrix-preview` | Writes and tints the picker entry, for the current theme or every installed one (`--all`) |
 
 The overlay uses an empty input region (`mask: Region {}`), so clicks fall
