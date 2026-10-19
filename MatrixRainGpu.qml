@@ -14,7 +14,6 @@
 
 import QtQuick
 import QtQuick.Window
-import qs.Commons
 import qs.Commons as Commons
 
 Item {
@@ -76,7 +75,7 @@ Item {
         height: rain.cell
         text: rain.alphabet.charAt(index)
         color: "white"
-        font.family: Style.fontFamily
+        font.family: Commons.Style.fontFamily
         font.pixelSize: Math.round(rain.cell * 0.92)
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter

@@ -7,7 +7,6 @@
 // against ~2% for MatrixRainGpu.qml. Kept because it works everywhere.
 
 import QtQuick
-import qs.Commons
 import qs.Commons as Commons
 
 Item {
@@ -259,7 +258,7 @@ Item {
   // Shared look for every glyph run. Fixed line height is what keeps the rows
   // on the grid when fontconfig substitutes a CJK face for the katakana.
   component Glyphs: Text {
-    font.family: Style.fontFamily
+    font.family: Commons.Style.fontFamily
     font.pixelSize: Math.round(rain.cell * 0.92)
     lineHeight: rain.cell
     lineHeightMode: Text.FixedHeight
